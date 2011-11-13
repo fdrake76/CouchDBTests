@@ -7,6 +7,7 @@ import org.ektorp.impl.StdCouchDbConnector;
 import org.ektorp.impl.StdCouchDbInstance;
 
 import java.io.*;
+import java.util.Properties;
 
 /**
  * Created by IntelliJ IDEA.
@@ -15,15 +16,15 @@ import java.io.*;
  * Time: 11:38 PM
  * To change this template use File | Settings | File Templates.
  */
-public class TestRunner {
-    private static final String DB_URL_1 = "http://192.168.208.101:5984";
-    private static final String DB_URL_2 = "http://192.168.208.2:5984";
-    private static final String DB_NAME = "test";
-    private static final String ATTACHMENT_FILENAME = "picture.jpg";
-    private static final String ATTACHMENT_MIME_TYPE = "image/jpeg";
-    private static final int RUNS_PER_TEST = 20;
-    private static final String OUTPUT_FILENAME = "/tmp/couchdb-tests.csv";
-    private static final int[] OPERATION_COUNTS = new int[]{ 50, 100, 250, 500, 1000 };
+public class PerformanceTestRunner {
+    private String dbUrl1;
+    private String dbUrl2;
+    private String dbName;
+    private String attachmentFilename;
+    private String attachmentMimeType;
+    private int runsPerTest;
+    private String outputFilename;
+    private int[] operationCounts;
 
     private CouchDbInstance dbInstance1;
     private CouchDbInstance dbInstance2;
@@ -38,16 +39,17 @@ public class TestRunner {
         }
     };
 
-    public TestRunner() throws Exception {
-        new File(OUTPUT_FILENAME).delete();
+    public PerformanceTestRunner() throws Exception {
+        buildProperties();
+        new File(outputFilename).delete();
                 HttpClient httpClient1 = new StdHttpClient.Builder()
-                .url(DB_URL_1).build();
+                .url(dbUrl1).build();
         HttpClient httpClient2 = new StdHttpClient.Builder()
-                .url(DB_URL_2).build();
+                .url(dbUrl2).build();
         dbInstance1 = new StdCouchDbInstance(httpClient1);
         dbInstance2 = new StdCouchDbInstance(httpClient2);
-        db1 = new StdCouchDbConnector(DB_NAME, dbInstance1);
-        db2 = new StdCouchDbConnector(DB_NAME, dbInstance2);
+        db1 = new StdCouchDbConnector(dbName, dbInstance1);
+        db2 = new StdCouchDbConnector(dbName, dbInstance2);
         db1.createDatabaseIfNotExists();
         db2.createDatabaseIfNotExists();
     }
@@ -55,12 +57,12 @@ public class TestRunner {
     public void cleanup() {
         db1.createDatabaseIfNotExists();
         db2.createDatabaseIfNotExists();
-        dbInstance1.deleteDatabase(DB_NAME);
-        dbInstance2.deleteDatabase(DB_NAME);
+        dbInstance1.deleteDatabase(dbName);
+        dbInstance2.deleteDatabase(dbName);
     }
 
     public void runTests() {
-        for(int operations : OPERATION_COUNTS) {
+        for(int operations : operationCounts) {
             runOperationBatch("DB1 "+operations+" Inserts", simpleAddOperation, dbInstance1, db1, operations);
             runOperationBatch("DB2 "+operations+" Inserts", simpleAddOperation, dbInstance2, db2, operations);
             runOperationBatch("DB1 "+operations+" Inserts With Attachment", attachmentAddOperation, dbInstance1, db1, operations);
@@ -73,6 +75,28 @@ public class TestRunner {
         }
     }
 
+    private void buildProperties() {
+        Properties props = new Properties();
+        try {
+            props.load(getClass().getResourceAsStream("testrunner.properties"));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        dbUrl1 = props.getProperty("dbUrl1");
+        dbUrl2 = props.getProperty("dbUrl2");
+        dbName = props.getProperty("dbName");
+        attachmentFilename = props.getProperty("attachmentFilename");
+        attachmentMimeType = props.getProperty("attachmentMimeType");
+        runsPerTest = Integer.parseInt(props.getProperty("runsPerTest"));
+        outputFilename = props.getProperty("outputFilename");
+
+        String[] opCountsTokens = props.getProperty("operationCounts").split(",");
+        operationCounts = new int[opCountsTokens.length];
+        for(int i=0; i<opCountsTokens.length;i++)
+            operationCounts[i] = Integer.parseInt(opCountsTokens[i]);
+    }
+
     private void runOperationBatch(String label, Operation operation, CouchDbInstance dbInstance,
                                    CouchDbConnector db, int operationCount) {
         runOperationBatch(label, operation, new CouchDbInstance[]{dbInstance},
@@ -81,13 +105,13 @@ public class TestRunner {
 
     private void runOperationBatch(String label, Operation operation, CouchDbInstance[] instances,
                                    CouchDbConnector[] connectors, int operations) {
-        for(int i=0;i<RUNS_PER_TEST;i++) {
+        for(int i=0;i< runsPerTest;i++) {
             for(CouchDbConnector db : connectors)
                 db.createDatabaseIfNotExists();
             PerformanceMetric metric = performOperation(operation, connectors, operations);
             printResults(label+" "+(i+1), metric);
             for(CouchDbInstance instance : instances)
-                instance.deleteDatabase(DB_NAME);
+                instance.deleteDatabase(dbName);
         }
     }
 
@@ -104,7 +128,7 @@ public class TestRunner {
         sb.append(",").append(metric.getTotalTime());
         System.out.println(sb.toString());
         try {
-            BufferedWriter out = new BufferedWriter(new FileWriter(OUTPUT_FILENAME, true));
+            BufferedWriter out = new BufferedWriter(new FileWriter(outputFilename, true));
             out.write(sb.toString()+"\n");
             out.close();
         } catch (IOException e) {
@@ -149,7 +173,7 @@ public class TestRunner {
         String dataB64 = null;
 
         public void preOperation(SimpleDocumentRepository repo, CouchDbConnector db, SimpleDocument doc) {
-            InputStream stream = getClass().getResourceAsStream("/"+ATTACHMENT_FILENAME);
+            InputStream stream = getClass().getResourceAsStream("/"+ attachmentFilename);
             byte[] data = new byte[0];
             try {
                 data = IOUtils.toByteArray(stream);
@@ -161,7 +185,7 @@ public class TestRunner {
         }
 
         public void operation(SimpleDocumentRepository repo, CouchDbConnector db, SimpleDocument doc) {
-            Attachment a = new Attachment("picture", dataB64, ATTACHMENT_MIME_TYPE);
+            Attachment a = new Attachment("picture", dataB64, attachmentMimeType);
             doc.addInlineAttachment(a);
             repo.add(doc);
         }
@@ -171,15 +195,15 @@ public class TestRunner {
 
         public void preOperation(SimpleDocumentRepository repo, CouchDbConnector db, SimpleDocument doc) {
             ReplicationCommand cmdFrom1To2 = new ReplicationCommand.Builder()
-                    .source(DB_NAME)
-                    .target(DB_URL_2+"/"+DB_NAME)
+                    .source(dbName)
+                    .target(dbUrl2 +"/"+ dbName)
                     .continuous(true)
                     .build();
             ReplicationStatus status1 = dbInstance1.replicate(cmdFrom1To2);
 
             ReplicationCommand cmdFrom2To1 = new ReplicationCommand.Builder()
-                    .source(DB_NAME)
-                    .target(DB_URL_1+"/"+DB_NAME)
+                    .source(dbName)
+                    .target(dbUrl1 +"/"+ dbName)
                     .continuous(true)
                     .build();
             ReplicationStatus status2 = dbInstance2.replicate(cmdFrom2To1);
@@ -198,7 +222,7 @@ public class TestRunner {
 
 
     public static void main(String[] args) throws Exception {
-        TestRunner runner = new TestRunner();
+        PerformanceTestRunner runner = new PerformanceTestRunner();
         runner.runTests();
         runner.cleanup();
     }
